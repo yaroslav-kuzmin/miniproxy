@@ -19,6 +19,8 @@
 /*                                                                           */
 /*****************************************************************************/
 
+#define _DEFAULT_SOURCE     1
+
 #include <stdio.h>
 #include <stdint.h>
 #include <unistd.h>

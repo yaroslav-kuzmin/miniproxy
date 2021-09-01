@@ -1,1 +1,5 @@
-miniproxy server 
+miniproxy server
+
+Build
+	meson setup . build
+	meson compile -C build

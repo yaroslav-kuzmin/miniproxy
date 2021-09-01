@@ -41,8 +41,6 @@
 
 /*****************************************************************************/
 
-static int listen_socket;
-
 static const char * programm_name = NULL;
 
 static char PID_MINIPROXY_STR[] = "PID_MINIPROXY";
@@ -67,6 +65,7 @@ static int print_help(FILE * stream)
 }
 
 #define VERSION_GIT     0xffffffff
+// TODO добавить скрипт для получение git хеша
 static char VERSION[] = "0.00-ffffffff\n";
 
 static int print_version(FILE * stream)
@@ -82,7 +81,7 @@ int set_nonblock(int fd)
 
 	val = fcntl(fd, F_GETFL);
 	if (val == -1) {
-		printf("fcntl(%d, F_GETFL): %s\n", fd, strerror(errno));
+		fprintf(stderr, "fcntl(%d, F_GETFL): %s\n", fd, strerror(errno));
 		return FAILURE;
 	}
 	if (val & O_NONBLOCK) {
@@ -90,7 +89,7 @@ int set_nonblock(int fd)
 	}
 	val |= O_NONBLOCK;
 	if (fcntl(fd, F_SETFL, val) == -1) {
-		printf("fcntl(%d, F_SETFL, O_NONBLOCK): %s\n", fd, strerror(errno));
+		fprintf(stderr, "fcntl(%d, F_SETFL, O_NONBLOCK): %s\n", fd, strerror(errno));
 		return FAILURE;
 	}
 	return SUCCESS;
@@ -111,13 +110,14 @@ static int init_request_dest(const char * dest_addres, const char * dest_port)
 	size_t size_port_str = strlen(dest_port);
 
 	request_dest_addr_size = 6 + size_addr_str + 1 + size_port_str + 2; // Host: <local addres>:<local port>\n\r
+	//TODO проверка на выделение памяти
 	request_dest_addr = calloc(request_dest_addr_size+1, sizeof(char));
 	strcat(request_dest_addr, "Host: ");
 	strcat(request_dest_addr, dest_addres);
 	strcat(request_dest_addr, ":");
 	strcat(request_dest_addr, dest_port);
 	strcat(request_dest_addr, "\r\n");
-	printf("Request dest (%ld):> %s\n", request_dest_addr_size, request_dest_addr);
+	//printf("Request dest (%ld):> %s\n", request_dest_addr_size, request_dest_addr);
 
 	return SUCCESS;
 }
@@ -128,6 +128,7 @@ static int init_request_local(const char * local_addres, const char * local_port
 	size_t size_port_str = strlen(local_port);
 
 	request_local_addr_size = 6 + size_addr_str + 1 + size_port_str + 2; // Host: <local addres>:<local port>\n\r
+	//TODO проверка на выделение памяти
 	request_local_addr = calloc(request_local_addr_size+1, sizeof(char));
 	strcat(request_local_addr, "Host: ");
 	strcat(request_local_addr, local_addres);
@@ -135,7 +136,7 @@ static int init_request_local(const char * local_addres, const char * local_port
 	strcat(request_local_addr, local_port);
 	strcat(request_local_addr, "\r\n");
 
-	printf("Request local (%ld):> %s\n", request_local_addr_size, request_local_addr);
+	//printf("Request local (%ld):> %s\n", request_local_addr_size, request_local_addr);
 	return SUCCESS;
 }
 
@@ -158,42 +159,25 @@ static int change_request(uint8_t ** buf_thread, int len)
 	char *str_begin;
 	int diff_str = (int)request_local_addr_size - (int)request_dest_addr_size;
 	size_t off_len;
+	//TODO возможен выход за пределы массива доп проверка
 	buf[len] = 0;
-	printf("0---\n");
-	printf("%s", buf);
-	printf("1---\n");
 
 	str_begin = strstr((const char*)buf, request_local_addr);
 	if (str_begin != NULL) {
-		printf("%s", str_begin);
-	printf("2---\n");
-
-		off_len = str_begin - (char*)buf;
-	printf("%ld\n", off_len);
+		off_len = str_begin - buf;
 		if(diff_str == 0) {
 			memmove(str_begin, request_dest_addr, request_dest_addr_size);
 		}
 		else {
 			char * p_dest = (char*)(buf + off_len + request_dest_addr_size);
 			char * p_src = (char*)(buf + off_len + request_local_addr_size);
-	printf("3---\n");
-	printf("%s", p_dest);
-	printf("4---\n");
-	printf("%s", p_src);
-	printf("5---\n");
-
 			size_t size = len;
 			size -= off_len;
 			size -= request_local_addr_size;
-			printf("%ld\n", size);
-	printf("6---\n");
-
 			memmove(p_dest, p_src, size);
 			memmove(str_begin, request_dest_addr, request_dest_addr_size);
 		}
-
 		len -= diff_str;
-		buf[len] = 0;
 	}
 	return len;
 }
@@ -203,91 +187,81 @@ static void * process_pipe(void * arg)
 	int * array = arg;
 	int local_fd = array[0];
 	int dest_fd = array[1];
-	//uint8_t buf[BUF_SIZE+1] = {0};
 	int rc;
 	struct pollfd sockets_fd[2];
 	int timeout = TIMEOUT_DISCONNECT;
 	pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+	// TODO проверка на корректное выделение
 	uint8_t * buf = malloc(BUF_SIZE + 1);
-
+#define LOCAL_FD   0
+#define DEST_FD    1
+	sockets_fd[LOCAL_FD].fd = local_fd;
+	sockets_fd[LOCAL_FD].events = POLLIN;
+	sockets_fd[DEST_FD].fd = dest_fd;
+	sockets_fd[DEST_FD].events = POLLIN;
 	for(;;) {
-		sockets_fd[0].fd = local_fd;
-		sockets_fd[0].events = POLLIN;
-		sockets_fd[0].revents = 0;
-
-		sockets_fd[1].fd = dest_fd;
-		sockets_fd[1].events = POLLIN;
-		sockets_fd[1].revents = 0;
-
+		sockets_fd[LOCAL_FD].revents = 0;
+		sockets_fd[DEST_FD].revents = 0;
 		timeout = TIMEOUT_DISCONNECT;
 		rc = poll(sockets_fd, 2, timeout);
 		if (rc == -1) {
-			fprintf(stderr, "Error poll : %s\n", strerror(errno));
+			fprintf(stderr, "Error thread poll : %s\n", strerror(errno));
 			break;
 		}
 		if (rc == 0) {
-			printf("Lost connect\n");
+			//printf("Lost connect\n");
 			break;
 		}
-
-		int revents = sockets_fd[0].revents;
-
-		if (revents & POLLIN) {
+		//TODO проверка ошибки на канале
+		if (sockets_fd[LOCAL_FD].revents & POLLIN) {
 			rc = recv(local_fd, buf, BUF_SIZE, 0);
 			if (rc == -1) {
-				fprintf(stderr, "Error read local_fd\n");
+				fprintf(stderr, "Error thread read local\n");
 				break;
 			}
 			if (rc == 0) {
-				fprintf(stderr, "Lost local connect\n");
+				//printf("Lost local connect\n");
 				break;
 			}
-			printf("read local_fd %d\n", rc);
-			rc = change_request(&buf, rc);
-			printf("+++\n");
-			printf("%d\n", rc);
-			printf("%s", buf);
 
+			rc = change_request(&buf, rc);
+			// TODO добавить проверку на возможенность записи в канал
 			rc = send(dest_fd, buf, rc, 0);
 			if (rc == -1 ) {
-				fprintf(stderr, "Error write dest_fd\n");
+				fprintf(stderr, "Error thread write dest\n");
 				break;
 			}
 			if (rc == 0) {
-				fprintf(stderr, "Lost dest connect\n");
+				//printf("Lost dest connect\n");
 				break;
 			}
-			//printf("write dest_fd %d\n", rc);
 		}
-
-		revents = sockets_fd[1].revents;
-		if (revents & POLLIN) {
+		// TODO проверка ошибки на канале
+		if (sockets_fd[DEST_FD].revents & POLLIN) {
 			rc = recv(dest_fd, buf, BUF_SIZE, 0);
 			if (rc == -1) {
-				fprintf(stderr, "Error read dest_fd\n");
+				fprintf(stderr, "Error thread read dest\n");
 				break;
 			}
 			if (rc == 0) {
-				fprintf(stderr, "Lost dest connect\n");
+				//printf("Lost dest connect\n");
 				break;
 			}
 			rc = send(local_fd, buf, rc, 0);
 			if (rc == -1 ) {
-				fprintf(stderr, "Error write local_fd\n");
+				fprintf(stderr, "Error thread write local\n");
 				break;
 			}
 			if (rc == 0) {
-				fprintf(stderr, "Lost local connect\n");
+				//printf("Lost local connect\n");
 				break;
 			}
 		}
 	}
+
 	free(buf);
 	close(local_fd);
 	close(dest_fd);
-	printf("thread exit\n");
-	fflush(stdout);
-	fflush(stderr);
 	pthread_exit(NULL);
 }
 
@@ -297,7 +271,7 @@ static int create_pipe(int local_socket_fd, s_dest_info * dest_info)
 	int rc;
 	int dest_socket_fd = socket(AF_INET, SOCK_STREAM, 0);
 	if (dest_socket_fd < 0) {
-		fprintf(stderr, "Can not create socket\n");
+		fprintf(stderr, "Can not create dedt socket\n");
 		return FAILURE;
 	}
 
@@ -318,7 +292,7 @@ static int create_pipe(int local_socket_fd, s_dest_info * dest_info)
 	thread_array[0] = local_socket_fd;
 	thread_array[1] = dest_socket_fd;
 
-	printf("connect success %s : %d : %d\n", dest_info->host_str, local_socket_fd, dest_socket_fd);
+	printf("connect success %s\n", dest_info->host_str);
 	add_thread(process_pipe, thread_array);
 
 	return SUCCESS;
@@ -334,7 +308,7 @@ static int check_dest(s_dest_info * dest_info)
 	dest_info->host_str = dest_info->addr_str;
 	dest_info->port_str = strchr(dest_info->host_str, ':');
 	if (dest_info->port_str == NULL) {
-		fprintf(stderr, "Port string not specified\n");
+		fprintf(stderr, "Destination port string not specified\n");
 		return FAILURE;
 	}
 	*dest_info->port_str = 0;
@@ -342,10 +316,10 @@ static int check_dest(s_dest_info * dest_info)
 
 	dest_info->port = strtoul(dest_info->port_str, NULL, 10);
 	if (dest_info->port == 0) {
-		fprintf(stderr, "Port not specified\n");
+		fprintf(stderr, "Destination port not specified\n");
 		return FAILURE;
 	}
-
+	// TODO проверка
 	init_request_dest((const char *)dest_info->host_str, (const char *)dest_info->port_str);
 
 	dest_info->addr.sin_family = AF_INET;
@@ -353,13 +327,13 @@ static int check_dest(s_dest_info * dest_info)
 
 	host_info = gethostbyname(dest_info->host_str);
 	if (host_info == NULL) {
-		fprintf(stderr, "Can not get host ip adrress\n");
+		fprintf(stderr, "Can not get destination ip adrress\n");
 		return FAILURE;
 	}
 
 	host_addr_list = host_info->h_addr_list;
 
-	printf("Name host : %s\n", host_info->h_name);
+	printf("Destination hostname : %s\n", host_info->h_name);
 
 	for (;*host_addr_list != NULL;) {
 		char * host_addr = *host_addr_list;
@@ -369,32 +343,34 @@ static int check_dest(s_dest_info * dest_info)
 		if (rc > 0)
 			break;
 		else
-			fprintf(stderr, "Can not convert addres %s\n", dest_info->addr_str);
+			fprintf(stderr, "Can not convert destination addres %s\n", dest_info->addr_str);
 
 		++host_addr_list;
 	}
 	if (rc <= 0)
 		return FAILURE;
 
-	printf("Convert host %s : port %s\n", dest_info->host_str, dest_info->port_str);
-
+	//printf("Convert host %s : port %s\n", dest_info->host_str, dest_info->port_str);
+	//TODO дубликат создания сокета для удаленого хоста можно обеденить в одну функцию
 	int socket_fd = socket(AF_INET, SOCK_STREAM, 0);
 	if (socket_fd < 0) {
-		fprintf(stderr, "Can not create socket\n");
+		fprintf(stderr, "Can not create destination socket\n");
 		return FAILURE;
 	}
 
 	rc = connect(socket_fd, (struct sockaddr*)&dest_info->addr, sizeof(dest_info->addr));
 	if (rc != 0 ) {
-		fprintf(stderr, "Can not connect %s : %s\n", dest_info->host_str, strerror(errno));
+		fprintf(stderr, "Can not destination connect %s : %s\n", dest_info->host_str, strerror(errno));
 		return FAILURE;
 	}
 
-	printf("connect success %s\n", dest_info->host_str);
+	printf("connect destination host %s: success\n", dest_info->host_str);
 
 	close(socket_fd);
 	return SUCCESS;
 }
+
+static int listen_socket;
 
 static int listen_local(char * local_addres)
 {
@@ -408,7 +384,7 @@ static int listen_local(char * local_addres)
 
 	port_str = strchr(host_str, ':');
 	if (port_str == NULL) {
-		fprintf(stderr, "Port string not specified\n");
+		fprintf(stderr, "Local port string not specified\n");
 		return FAILURE;
 	}
 	*port_str = 0;
@@ -416,30 +392,24 @@ static int listen_local(char * local_addres)
 
 	port = strtoul(port_str, NULL, 10);
 	if (port == 0) {
-		fprintf(stderr, "Port not specified\n");
+		fprintf(stderr, "Local port not specified\n");
 		return FAILURE;
 	}
-	init_request_local((const char*)host_str, (const char*)port_str);
 
-	listen_socket = socket(AF_INET, SOCK_STREAM, 0);
-	if (listen_socket == -1) {
-		fprintf(stderr, "Can not create socket : %s\n", strerror(errno));
-		return FAILURE;
-	}
+	init_request_local((const char*)host_str, (const char*)port_str);
 
 	addr.sin_family = AF_INET;
 	addr.sin_port = htons(port);
 
 	host_info = gethostbyname(host_str);
 	if (host_info == NULL) {
-		fprintf(stderr, "Can not get host ip adrress\n");
-		close(listen_socket);
+		fprintf(stderr, "Can not get local host ip adrress\n");
 		return FAILURE;
 	}
 
 	host_addr_list = host_info->h_addr_list;
 
-	printf("Name host : %s\n", host_info->h_name);
+	printf("Local hostname : %s\n", host_info->h_name);
 
 	for (;*host_addr_list != NULL;) {
 		char * host_addr = *host_addr_list;
@@ -449,12 +419,17 @@ static int listen_local(char * local_addres)
 		if (rc > 0)
 			break;
 		else
-			fprintf(stderr, "Can not convert addres %s\n", local_addres);
+			fprintf(stderr, "Can not convert local addres %s\n", local_addres);
 
 		++host_addr_list;
 	}
 	if (rc <= 0) {
-		close(listen_socket);
+		return FAILURE;
+	}
+
+	listen_socket = socket(AF_INET, SOCK_STREAM, 0);
+	if (listen_socket == -1) {
+		fprintf(stderr, "Can not create local socket : %s\n", strerror(errno));
 		return FAILURE;
 	}
 
@@ -471,24 +446,26 @@ static int listen_local(char * local_addres)
 		close(listen_socket);
 		return FAILURE;
 	}
-/*
+
 	rc = set_nonblock(listen_socket);
 	if(rc == -1){
-		fprintf(stderr, "Can not setting listen socket : %s\n", strerror(errno));
+		fprintf(stderr, "Can not setting local socket : %s\n", strerror(errno));
 		close(listen_socket);
 		return FAILURE;
 	}
-	*/
-	printf("Listen socket\n");
+
+	printf("Local socket listen\n");
 	return SUCCESS;
 }
 
 /*****************************************************************************/
 static void close_proxy(int act)
 {
-	printf("Close proxy\n");
-	if (listen_socket != 0)
+	printf("shutdown proxy\n");
+	if (listen_socket != 0) {
 		close(listen_socket);
+		listen_socket = 0;
+	}
 
 	deinit_thread_poll();
 	deinit_request();
@@ -594,7 +571,7 @@ static int set_signals(void)
 
 /*****************************************************************************/
 #if 0
-TODO добавление переменой окружения
+TODO добавление переменой окружения для корректной завершения процесса
 #define SIZE_PID_STR      11
 static int set_pid_str(pid_t pid)
 {
@@ -620,15 +597,13 @@ static void kill_proxy(void)
 
 /*****************************************************************************/
 static char * local_addres = NULL;
-
 static s_dest_info dest_info;
-
-static int proxy_stop = 0;
 
 int main(int argc,char * argv[])
 {
 	int rc;
 	int next_option = 0;
+	int proxy_stop = 0;
 
 	programm_name = argv[0];
 
@@ -681,7 +656,7 @@ int main(int argc,char * argv[])
 
 	rc = set_signals();
 	if (rc != SUCCESS) {
-		//TODO add error code
+		//TODO добавить коды ошибок
 		fprintf(stderr, "can not run proxy : 001\n");
 		return FAILURE;
 	}
@@ -697,17 +672,18 @@ int main(int argc,char * argv[])
 	rc = listen_local(local_addres);
 	if (rc != SUCCESS)
 		return rc;
-/*
+#if 0
+	TODO переход в фоновый режим
 	pid_t pid = fork();
 	if ( pid != 0) {
 		printf("Start miniproxy : pid %d\n", pid);
 		set_pid_str(pid);
 		exit(SUCCESS);
 	}
-	// TODO add log file
-*/
-	for(;;) {
+#endif
+	// TODO add log FILE
 
+	for(;;) {
 		struct pollfd poll_socket = {.fd = listen_socket, .events = POLLIN, .revents = 0};
 		rc = poll(&poll_socket, 1, -1);
 		if (rc == -1) {
@@ -718,7 +694,7 @@ int main(int argc,char * argv[])
 
 		struct sockaddr_in client_name;
 		socklen_t client_name_len = sizeof(client_name);
-		//printf("revents %x\n", poll_socket.revents);
+		//TODO обработка ошибок канала
 		if (poll_socket.revents & POLLIN) {
 			int sock_fd = accept(listen_socket, (struct sockaddr*)&client_name, &client_name_len);
 			if (sock_fd == -1) {
@@ -731,7 +707,9 @@ int main(int argc,char * argv[])
 				close(sock_fd);
 				continue;
 			}
-			create_pipe(sock_fd, &dest_info);
+			rc = create_pipe(sock_fd, &dest_info);
+			if (rc != SUCCESS)
+				close(sock_fd);
 		}
 	}
 
